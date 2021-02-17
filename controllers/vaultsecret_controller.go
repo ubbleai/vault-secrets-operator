@@ -29,6 +29,8 @@ type VaultSecretReconciler struct {
 	Scheme *runtime.Scheme
 }
 
+const defaultPathName string = "default"
+
 // +kubebuilder:rbac:groups=ricoberger.de,resources=vaultsecrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=ricoberger.de,resources=vaultsecrets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=ricoberger.de,resources=vaultsecrets/finalizers,verbs=get;list;watch;create;update;patch;delete
@@ -70,34 +72,44 @@ func (r *VaultSecretReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error)
 	// When the property isn't set we are using the shared client. It is also possible that the shared client is nil, so
 	// that we have to check for this first. This could happen since we do not return an error when we initializing the
 	// client during start up, to not require a default Vault Role.
-	var data map[string][]byte
+	var data map[string]map[string][]byte
 
-	if instance.Spec.VaultRole != "" {
-		log.WithValues("vaultRole", instance.Spec.VaultRole).Info("Create client to get secret from Vault")
-		vaultClient, err := vault.CreateClient(instance.Spec.VaultRole)
-		if err != nil {
-			// Error creating the Vault client - requeue the request.
-			return ctrl.Result{}, err
+	// Manage multiple vault paths or a single vault path
+	paths := instance.Spec.Paths
+	if paths == nil {
+		paths = map[string]string{
+			defaultPathName: instance.Spec.Path,
 		}
-		data, err = vaultClient.GetSecret(instance.Spec.SecretEngine, instance.Spec.Path, instance.Spec.Keys, instance.Spec.Version, instance.Spec.IsBinary, instance.Spec.VaultNamespace)
-		if err != nil {
-			// Error while getting the secret from Vault - requeue the request.
-			log.Error(err, "Could not get secret from vault")
-			return ctrl.Result{}, err
-		}
-	} else {
-		log.Info("Use shared client to get secret from Vault")
-		if vault.SharedClient == nil {
-			err = fmt.Errorf("shared client not initilized and vaultRole property missing")
-			log.Error(err, "Could not get secret from Vault")
-			return ctrl.Result{}, err
-		}
+	}
 
-		data, err = vault.SharedClient.GetSecret(instance.Spec.SecretEngine, instance.Spec.Path, instance.Spec.Keys, instance.Spec.Version, instance.Spec.IsBinary, instance.Spec.VaultNamespace)
-		if err != nil {
-			// Error while getting the secret from Vault - requeue the request.
-			log.Error(err, "Could not get secret from vault")
-			return ctrl.Result{}, err
+	for pk, pv := range paths {
+		if instance.Spec.VaultRole != "" {
+			log.WithValues("vaultRole", instance.Spec.VaultRole).Info("Create client to get secret from Vault")
+			vaultClient, err := vault.CreateClient(instance.Spec.VaultRole)
+			if err != nil {
+				// Error creating the Vault client - requeue the request.
+				return ctrl.Result{}, err
+			}
+			data[pk], err = vaultClient.GetSecret(instance.Spec.SecretEngine, pv, instance.Spec.Keys, instance.Spec.Version, instance.Spec.IsBinary, instance.Spec.VaultNamespace)
+			if err != nil {
+				// Error while getting the secret from Vault - requeue the request.
+				log.Error(err, "Could not get secret from vault")
+				return ctrl.Result{}, err
+			}
+		} else {
+			log.Info("Use shared client to get secret from Vault")
+			if vault.SharedClient == nil {
+				err = fmt.Errorf("shared client not initilized and vaultRole property missing")
+				log.Error(err, "Could not get secret from Vault")
+				return ctrl.Result{}, err
+			}
+
+			data[pk], err = vault.SharedClient.GetSecret(instance.Spec.SecretEngine, pv, instance.Spec.Keys, instance.Spec.Version, instance.Spec.IsBinary, instance.Spec.VaultNamespace)
+			if err != nil {
+				// Error while getting the secret from Vault - requeue the request.
+				log.Error(err, "Could not get secret from vault")
+				return ctrl.Result{}, err
+			}
 		}
 	}
 
@@ -172,21 +184,32 @@ type templateContext struct {
 }
 
 // runTemplate executes a template with the given secrets map, filled with the Vault secres
-func runTemplate(cr *ricobergerdev1alpha1.VaultSecret, tmpl string, secrets map[string][]byte) ([]byte, error) {
-	// Set up the context
-	sd := templateContext{
-		Secrets: make(map[string]string, len(secrets)),
-		Vault: templateVaultContext{
-			Path:    cr.Spec.Path,
-			Address: os.Getenv("VAULT_ADDRESS"),
-		},
-		Namespace:   cr.Namespace,
-		Labels:      cr.Labels,
-		Annotations: cr.Annotations,
+func runTemplate(cr *ricobergerdev1alpha1.VaultSecret, tmpl string, secrets map[string]map[string][]byte) ([]byte, error) {
+	// Check if templating is required for multiple vault paths
+	paths := cr.Spec.Paths
+	if paths == nil {
+		paths = map[string]string{
+			defaultPathName: cr.Spec.Path,
+		}
 	}
-	// For templating, these should all be strings, convert
-	for k, v := range secrets {
-		sd.Secrets[k] = string(v)
+
+	sd := make(map[string]templateContext, len(paths))
+	for pk, pv := range paths {
+		// Set up the context
+		sd[pk] = templateContext{
+			Secrets: make(map[string]string, len(secrets[pk])),
+			Vault: templateVaultContext{
+				Path:    pv,
+				Address: os.Getenv("VAULT_ADDRESS"),
+			},
+			Namespace:   cr.Namespace,
+			Labels:      cr.Labels,
+			Annotations: cr.Annotations,
+		}
+		// For templating, these should all be strings, convert
+		for k, v := range secrets[pk] {
+			sd[pk].Secrets[k] = string(v)
+		}
 	}
 
 	// We need to exclude some functions for security reasons and proper working of the operator, don't use TxtFuncMap:
@@ -211,7 +234,12 @@ func runTemplate(cr *ricobergerdev1alpha1.VaultSecret, tmpl string, secrets map[
 		return nil, err
 	}
 	var bout bytes.Buffer
-	err = t.Execute(&bout, sd)
+	// format sd if no multiple paths are used for backwards compatibility
+	if cr.Spec.Paths != nil {
+		err = t.Execute(&bout, sd)
+	} else {
+		err = t.Execute(&bout, sd[defaultPathName])
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +247,7 @@ func runTemplate(cr *ricobergerdev1alpha1.VaultSecret, tmpl string, secrets map[
 }
 
 // newSecretForCR returns a secret with the same name/namespace as the cr
-func newSecretForCR(cr *ricobergerdev1alpha1.VaultSecret, data map[string][]byte) *corev1.Secret {
+func newSecretForCR(cr *ricobergerdev1alpha1.VaultSecret, data map[string]map[string][]byte) *corev1.Secret {
 	labels := map[string]string{
 		"created-by": "vault-secrets-operator",
 	}
@@ -230,8 +258,9 @@ func newSecretForCR(cr *ricobergerdev1alpha1.VaultSecret, data map[string][]byte
 	for k, v := range cr.ObjectMeta.Annotations {
 		annotations[k] = v
 	}
+
+	newdata := make(map[string][]byte)
 	if cr.Spec.Templates != nil {
-		newdata := make(map[string][]byte)
 		for tk, tv := range cr.Spec.Templates {
 			// Template 'tv'
 			if templated, terr := runTemplate(cr, tv, data); terr == nil {
@@ -240,7 +269,8 @@ func newSecretForCR(cr *ricobergerdev1alpha1.VaultSecret, data map[string][]byte
 				newdata[tk] = []byte(fmt.Sprintf("# Template ERROR: %s", terr))
 			}
 		}
-		data = newdata
+	} else {
+		newdata = data[defaultPathName]
 	}
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -249,7 +279,7 @@ func newSecretForCR(cr *ricobergerdev1alpha1.VaultSecret, data map[string][]byte
 			Labels:      labels,
 			Annotations: annotations,
 		},
-		Data: data,
+		Data: newdata,
 		Type: cr.Spec.Type,
 	}
 }

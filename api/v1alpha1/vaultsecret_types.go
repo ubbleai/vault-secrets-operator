@@ -29,10 +29,16 @@ type VaultSecretSpec struct {
 	Keys []string `json:"keys,omitempty"`
 	// Templates, if not empty will be run through the the Go templating engine, with `.Secrets` being mapped
 	// to the list of secrets received from Vault. When omitted set, all secrets will be added as key/val pairs
-	// under Secret.data.
+	// under Secret.data, or under PathName.Secrets.data if secrets are fetched from multiple vault paths.
 	Templates map[string]string `json:"templates,omitempty"`
 	// Path is the path of the corresponding secret in Vault.
 	Path string `json:"path"`
+	// Paths, if not empty, will be used instead of path to fetch
+	// vault secrets from multiple paths. The secrets in these paths can then
+	// be manipulated using the templating feature. This way if concatenation
+	// of secret values is required (pki certificate manipulation for example).
+	// Specify vault paths as key/value pairs `PathName:PathValue`.
+	Paths map[string]string `json:"paths,omitempty"`
 	// SecretEngine specifies the type of the Vault secret engine in which the
 	// secret is stored. Currently the 'KV Secrets Engine - Version 1' and
 	// 'KV Secrets Engine - Version 2' are supported. The value must be 'kv'. If

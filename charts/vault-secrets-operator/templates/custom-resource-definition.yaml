@@ -56,6 +56,14 @@ spec:
               path:
                 description: Path is the path of the corresponding secret in Vault.
                 type: string
+              paths:
+                additionalProperties:
+                  type: string
+                description: Paths, if not empty, will be used instead of path to fetch
+                  vault secrets from multiple paths. The secrets in these paths can then
+                  be manipulated using the templating feature. This way if concatenation
+                  of secret values is required (pki certificate manipulation for example).
+                  Specify vault paths as key/value pairs `PathName\:PathValue`.
               reconcileStrategy:
                 description: ReconcileStrategy defines the strategy for reconcilation.
                   The default value is "Replace", which replaces any existing data
@@ -78,7 +86,8 @@ spec:
                 description: Templates, if not empty will be run through the the Go
                   templating engine, with `.Secrets` being mapped to the list of secrets
                   received from Vault. When omitted set, all secrets will be added
-                  as key/val pairs under Secret.data.
+                  as key/val pairs under Secret.data, or under PathName.Secrets.data
+                  if secrets are fetched from multiple vault paths.
                 type: object
               type:
                 description: Type is the type of the Kubernetes secret, which will
@@ -105,10 +114,15 @@ spec:
                   environment variable is set, the Kubernetes secret will be updated
                   if the Vault secret changes.
                 type: integer
-            required:
-            - path
-            - type
             type: object
+            oneOf:
+            - required:
+              - path
+              - type
+            - required:
+              - paths
+              - templates
+              - type
           status:
             description: VaultSecretStatus defines the observed state of VaultSecret
             type: object
