@@ -72,7 +72,7 @@ func (r *VaultSecretReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error)
 	// When the property isn't set we are using the shared client. It is also possible that the shared client is nil, so
 	// that we have to check for this first. This could happen since we do not return an error when we initializing the
 	// client during start up, to not require a default Vault Role.
-	var data map[string]map[string][]byte
+	data := make(map[string]map[string][]byte)
 
 	// Manage multiple vault paths or a single vault path
 	paths := instance.Spec.Paths

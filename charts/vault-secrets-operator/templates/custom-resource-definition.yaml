@@ -64,6 +64,7 @@ spec:
                   be manipulated using the templating feature. This way if concatenation
                   of secret values is required (pki certificate manipulation for example).
                   Specify vault paths as key/value pairs `PathName\:PathValue`.
+                type: object
               reconcileStrategy:
                 description: ReconcileStrategy defines the strategy for reconcilation.
                   The default value is "Replace", which replaces any existing data
